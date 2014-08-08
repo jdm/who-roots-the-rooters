@@ -7,7 +7,7 @@ Goals:
 
 A web browser's purpose in life
 is to mediate interaction between a user and a document.
-And these days,
+These days,
 a "document" can be a full-fledged interactive application.
 Users expect a browser to be fast and responsive,
 so the core layout and rendering algorithms
@@ -16,7 +16,7 @@ At the same time,
 JavaScript code in the document
 can perform complex modifications
 through the [Document Object Model](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model).
-So the browser's representation of a document in memory
+This means the browser's representation of a document in memory
 is a cross-language data structure,
 bridging the gap between
 low-level native code
@@ -28,8 +28,8 @@ to advance the state of the art.
 We have a new approach for DOM memory management,
 and we're using some exciting features of
 the [Rust](http://www.rust-lang.org/) language and compiler
-to help us.
-We can orchestrate the interaction between
+to support it.
+We can facilitate the interaction between
 Servo's Rust code,
 the [SpiderMonkey](https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey) garbage collector (written in C++),
 and the JavaScript code from the document itself,
@@ -39,8 +39,8 @@ in a way that's fast, secure, and produces maintainable code.
 # Memory management for the DOM
 
 It's essential that we never destroy a DOM object
-while it's still accessible from either JavaScript or native code.
-Such use-after-free bugs often result in exploitable security holes.
+while it's still accessible from either JavaScript or native code -
+such use-after-free bugs often result in exploitable security holes.
 To solve this problem, most existing browsers use
 [reference counting](http://en.wikipedia.org/wiki/Reference_counting)
 to track the pointers between underlying low-level DOM objects.
@@ -92,21 +92,21 @@ so these objects will never be freed.
 
 [ FIXME: draw a graph? ]
 
-Existing browsers resolve this problem in several ways.
-Some do nothing, and leak memory.
-Some try to manually break possible cycles,
-by nulling out `mEvent` for example.
-And some implement a cycle collection algorithm
+Existing browsers resolve this problem in several ways:
+some do nothing, and leak memory;
+some try to manually break possible cycles,
+by nulling out `mEvent` for example;
+some implement a cycle collection algorithm
 on top of reference counting.
 
-None of these solutions is particularly satisfying,
-so we wanted to try something new in Servo.
-Indeed, we don't use reference counting on DOM objects at all.
+None of these solutions are particularly satisfying,
+so we're trying something new in Servo by choosing not to use
+reference counting on DOM objects at all.
 Instead, we give the JavaScript garbage collector full responsibility
 for managing those native-code DOM objects.
-When we manipulate a DOM object from native code,
-we must first "root" it in the garbage collector
-to ensure it won't be destroyed suddenly.
+Before we manipulate a DOM object from native code,
+we must first [root](http://en.wikipedia.org/wiki/Tracing_garbage_collection#Reachability_of_an_object) it in the garbage collector
+to ensure it won't be destroyed inadvertently.
 
 This is where we take advantage of some cool Rust features.
 We use compiler-derived traits
@@ -114,7 +114,7 @@ to implement garbage collector hooks
 without error-prone boilerplate.
 We use a custom static analysis pass
 to check that DOM objects are rooted when they need to be.
-And we use lifetime checking to ensure at compile time
+Finally, we use lifetime checking to ensure at compile time
 that pointers to the interior of a DOM object
 cannot outlive the rooting.
 
@@ -138,7 +138,7 @@ Forgetting an entry can result in a memory leak.
 In Servo the consequences would be even worse:
 if the garbage collector can't see all references,
 it might free a node that is still in use.
-So it's essential for both security and programmer convenience
+It's essential for both security and programmer convenience
 that we get rid of this manual effort.
 
 Rust has a notion of [traits](http://doc.rust-lang.org/tutorial.html#traits),
@@ -157,7 +157,7 @@ will provide a method named `clone`
 that takes a value of the type
 (by reference, hence `&self`)
 and returns a new value of the same type (`Self`).
-So the `Clone` trait describes objects that can be copied.
+Clearly, the `Clone` trait describes objects that can be copied.
 
 Another example is the [`Encodable` trait](http://doc.rust-lang.org/serialize/trait.Encodable.html) for serialization:
 
@@ -203,9 +203,9 @@ and so on.
 This nicely replaces
 the manual listing of data fields
 that we had in C++.
-If we add a field to `Element` that doesn't implement `Encodable`,
-the compiler will yell at us.
-So we have compile-time assurance
+The compiler will yell at us
+if we add a field to `Element` that doesn't implement `Encodable`,
+providing compile-time assurance
 that we're tracing all the fields
 of our objects.
 
@@ -220,17 +220,16 @@ pub struct Node {
     ...
 ```
 
-Each node [optionally](file:///home/keegan/proj/rust/rust-master/doc/core/option/type.Option.html) points to
+Each node [optionally](http://doc.rust-lang.org/std/option/type.Option.html) points to
 a parent node, a first child, and so forth.
 The [`Encodable` implementation for `JS<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/trace.rs#L51-L56)
 is *not* automatically derived;
-this where we actually tell
+this is where we actually tell
 the JavaScript garbage collector
 about these pointers.
 
 
 # Lifetimes
-=========
 
 By yielding all control over deallocation to SpiderMonkey's garbage collector, we now need to solve the safety problem that other browsers use reference counting to avoid. We've developed a simple set of types that enforce sound rooting practices, such that it should be impossible to use pointers to GC-owned values in unsafe ways.
 
@@ -283,10 +282,6 @@ As described previously, the Rust compiler can ensure that it's impossible to mi
 
 ---
 
-The [Document Object Model](http://dom.spec.whatwg.org/) defined by the HTML specification is garbage-collected.
-
----
-
 To quickly review, there exists specific allocation control in languages like C++:
 ```
   Image* image = new Image();
@@ -301,8 +296,4 @@ while in JavaScript, the following behaves quite differently, despite appearing 
 ```
 In JavaScript, the programmer lacks control over the deallocation of values. The `delete` operator seen here merely removes a reference to the value, but it will not be deallocated until the next time the browser virtual machine invokes a full garbage collection, and only then if there are no other outstanding references to the value. 
 
-
----
-
-Browsers that implement the DOM in a non-garbage-collected language face a fundamental challenge of bridging this divide
 
