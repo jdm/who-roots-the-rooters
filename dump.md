@@ -20,7 +20,7 @@ struct Element {
 
 //JavaScript
 elem.addEventListener('load', function(event) {
-  event.originalTarget = elem;
+  event.customOriginalTarget = elem;
 });
 ```
 Here we see a cross-language cycle, where the C++ code contains a strong reference to an Event object. This event is dispatched, and its handler sets an "expando property" on the event object's reflector which acts as a strong reference to the owner of the event handler. If this owner is the same element that is storing the event, we no longer have a clear way to decide when to release the memory for these two objects, since the full ownership graph is not available to us. Modern browsers resolve this problem in several ways - some do nothing (and leak memory), some try to manually break possible cycles (by nulling out mEvent, for example), and some implement a cycle collection algorithm and break them automatically. The fundamental difficulty here stems from not having the full, cross-language ownership graph available, and this is where Servo is attempting to improve the state of the art. 
@@ -38,7 +38,26 @@ NS_IMPL_CYCLE_COLLECTION(nsFrameLoader, mDocShell, mMessageManager, mChildMessag
 ```
 This is a macro that declares the members of a C++ class that should be added to the graph of potential cycles. The effect of forgetting an entry in this list in Gecko is a potential memory leak. In Servo, if we miss declaring an edge from one GC-owned value to another, we can end up with an exploitable use-after-free error. Therefore, we need a way to make forgetting such a link a compile-time error, and we get that in the form of derived traits.
 
-In Rust, a trait is effectively an interface (or a [type class](http://en.wikipedia.org/wiki/Type_class), if that means more to you). The language also provides the ability to annotate arbitrary types with a `deriving` annotation, which indicates to the compiler that every contained member of the type must also implement the trait. It's easy to imagine this being useful for serialization purposes, and we make use of it to ensure that every member of a DOM type in Servo can be understood by the SpiderMonkey garbage collector. The trick is that SpiderMonkey allows each reflector to specify a "trace hook" - a function pointer that will be called each time the reflector is encountered in the object graph while performing a garbage collection. This function ends up calling the method of the trait our types derive (`deriving(Encodable)` yields `a.encode(some_encoder)`), which then recurses on each member of the type. If we add a member that doesn't implement the same trait, the compiler yells at us. Transitively, this yields the property that any garbage-collected value that is reachable via the Rust type system is visible by SpiderMonkey's garbage collector, and with a minimum of boilerplate, no less!
+In Rust, a trait is effectively an interface (or a [type class](http://en.wikipedia.org/wiki/Type_class), if that means more to you). The language also permits annotating arbitrary types with a `deriving` annotation, which indicates to the compiler that every contained member of the type must also implement the trait. It's easy to imagine this being useful for serialization purposes, and we make use of it to ensure that every member of a DOM type in Servo can be understood by the SpiderMonkey garbage collector. The trick is that SpiderMonkey allows each reflector to specify a "trace hook" - a function pointer that will be called each time the reflector is encountered in the object graph while performing a garbage collection. This function ends up calling the method of the trait our types derive (`deriving(Encodable)` yields `a.encode(some_encoder)`), which then recurses on each member of the type. If we add a member that doesn't implement the same trait, the compiler yells at us. Transitively, this yields the property that any garbage-collected value that is reachable via the Rust type system is visible by SpiderMonkey's garbage collector, and with a minimum of boilerplate, no less!
+
+Here's an example of a complete definition of a simple DOM type that is fully reachable by the GC:
+
+```
+#[deriving(Encodable)]
+pub struct HTMLCollection {
+    collection: CollectionTypeId,
+    reflector_: Reflector,
+}
+
+#[deriving(Encodable)]
+pub enum CollectionTypeId {
+    Static(Vec<JS<Element>>),
+    Live(JS<Node>, Box<CollectionFilter>)
+}
+```
+
+Regardless of whether a given `HTMLCollection` object is storing a static collection (ie. a vector of DOM pointers) or a live one (ie. a pointer to a Node containing a collection and a filter to apply), the GC will always trace all pointers reachable via the collection.
+
 
 
 Lifetimes
@@ -55,11 +74,35 @@ These types allow us to enforce the following rules that make Servo's DOM implem
 
 * All interactions with the underlying GC-owned value (both calling methods and accessing members) must occur through a root
 ** Only `JSRef` implements any dereferencing behaviour. `Temporary` and `JS` values merely carry around a pointer and provide facilities to create stack-bounded roots.
-** All methods take `JSRef` arguments, and all methods for DOM type Foo are implemented on `JSRef<Foo>` types, rather than `Foo` itself.
+** All methods take `JSRef` arguments, and all methods for DOM type Foo are implemented on `JSRef<Foo>` types, rather than `Foo` itself. This ensures that argument and self pointers are always safe to use.
 * Any reference to a GC-owned value on the heap must be reachable by the GC
 ** `JS<T>` pointers implement the tracing trait described previously. 
 * No reference to a rooted value can outlive its root
 ** `JSRef<T>`'s formal type is actually `JSRef<'a, T>`. The `'a` refers to a lifetime variable, which refers to the lifetime of the originating root for this reference. For this reason, the Rust compiler enforces that a `JSRef` value cannot outlive its owning root.
+
+The last point is the one unique to Rust. In Rust, every value has a lifetime that encompasses its allocation and deallocation. This is easiest to understand in the context of lexical scopes:
+```
+  struct Container<'a, 'b> {
+    int_ptr: &'a int,
+    str_ptr: &'b str,
+  }
+
+  {
+    let some_int = 5;                               // 'some_int
+    {                                               // ^
+      let some_str = "foo";                         // |  'some_str
+      {                                             // |  ^
+        let container = Container { a: &a, b: &b }; // |  |  'container
+        println!("{:?} {:?}",                       // |  |  ^
+                 *container.int_ptr,                // |  |  |
+                 *container.str_ptr);               // |  |  v
+      }                                             // |  v
+    }                                               // v
+  }
+```
+
+`Container` is a structure containing safe references to live values - the Rust compiler enforces this by only allowing pointers to values with lifetimes that are at least as long as the lifetime `'container` in this case. The lifetimes `'some_int` and `'some_str`, which are equivalent to the surrounding lexical scopes, fulfill this property, and are substituted for the generic lifetimes `'a` and `'b'` for the type of the value `container`.
+
 
 
 Custom static analysis pass
@@ -70,9 +113,6 @@ As described previously, the Rust compiler can ensure that it's impossible to mi
 
 
 ---
-
-
-
 
 The [Document Object Model](http://dom.spec.whatwg.org/) defined by the HTML specification is garbage-collected.
 
