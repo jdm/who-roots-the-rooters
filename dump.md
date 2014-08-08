@@ -233,10 +233,10 @@ about these pointers.
 
 By yielding all control over deallocation to SpiderMonkey's garbage collector, we now need to solve the safety problem that other browsers use reference counting to avoid. We've developed a simple set of types that enforce sound rooting practices, such that it should be impossible to use pointers to GC-owned values in unsafe ways.
 
-* `Root<T>` - a stack-allocated value that "roots" a GC-owned value for the duration of the root's lifetime (ie. prevents it being collected)
-* `JSRef<T>` - a freely-cloneable smart pointer to a rooted, GC-owned value that can be dereferenced to interact with the wrapped value
-* `JS<T>` - a non-stack-allocated pointer to a GC-owned value
-* `Temporary<T>` - a stack-allocated, movable pointer to a GC-owned value that ensures its wrapped value is rooted for the duration of the wrapper's lifetime
+* `Root<T>` - stack-allocated value that "roots" a GC-owned value for the duration of the root's lifetime (ie. prevents it being collected)
+* `JSRef<T>` - freely-cloneable smart pointer to a rooted, GC-owned value that can be dereferenced to interact with the wrapped value
+* `JS<T>` - non-stack-allocated pointer to a GC-owned value
+* `Temporary<T>` - stack-allocated, movable pointer to a GC-owned value that ensures its wrapped value is rooted for the duration of the wrapper's lifetime
 
 These types allow us to enforce the following rules that make Servo's DOM implementation safe:
 
@@ -249,7 +249,7 @@ These types allow us to enforce the following rules that make Servo's DOM implem
   * `JSRef<T>`'s formal type is actually `JSRef<'a, T>`. The `'a` refers to a lifetime variable, which refers to the lifetime of the originating root for this reference. For this reason, the Rust compiler enforces that a `JSRef` value cannot outlive its owning root.
 
 The last point is the one unique to Rust. In Rust, every value has a lifetime that encompasses its allocation and deallocation. This is easiest to understand in the context of lexical scopes:
-```
+```rust
   struct Container<'a, 'b> {
     int_ptr: &'a int,
     str_ptr: &'b str,
