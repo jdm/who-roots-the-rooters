@@ -1,3 +1,5 @@
+# Safe DOM manipulation in Servo: tools for cross-language memory management
+
 A web browser's purpose in life
 is to mediate interaction between a user and a document.
 These days,
@@ -26,7 +28,7 @@ lifetime checking,
 and custom static analysis plugins.
 
 
-# Memory management for the DOM
+## Memory management for the DOM
 
 It's essential that we never destroy a DOM object
 while it's still reachable from either JavaScript or native code —
@@ -101,7 +103,7 @@ that let us build this
 in a way that's fast, secure, and maintainable.
 
 
-# Auto-generating field traversals
+## Auto-generating field traversals
 
 How will the garbage collector
 find all the references between DOM objects?
@@ -223,7 +225,7 @@ this is where we actually call
 the SpiderMonkey trace hooks.
 
 
-# Lifetime checking for safe rooting
+## Lifetime checking for safe rooting
 
 The Rust code in Servo
 needs to pass DOM object pointers as function arguments,
@@ -391,7 +393,7 @@ You can check out
 the [Servo project wiki](https://github.com/servo/servo/wiki/Using-DOM-types)
 for more of the details that didn't make it into this article.
 
-# Custom static analysis
+## Custom static analysis
 
 To recap,
 the safety of our system depends on
