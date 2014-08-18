@@ -1,10 +1,3 @@
-Goals:
-* deriving trace hooks
-* lifetimes for safe rooted references
-* lint for unsafe type uses
-
----
-
 A web browser's purpose in life
 is to mediate interaction between a user and a document.
 These days,
@@ -22,25 +15,22 @@ bridging the gap between
 low-level native code
 and the high-level, garbage-collected world of JavaScript.
 
-This is one of many opportunities we have
+We're taking this as another opportunity
 in the [Servo project](https://github.com/servo/servo/)
 to advance the state of the art.
 We have a new approach for DOM memory management,
-and we're using some exciting features of
-the [Rust](http://www.rust-lang.org/) language and compiler
-to support it.
-We can facilitate the interaction between
-Servo's Rust code,
-the [SpiderMonkey](https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey) garbage collector (written in C++),
-and the JavaScript code from the document itself,
-in a way that's fast, secure, and produces maintainable code.
+and we get to use some of
+the [Rust](http://www.rust-lang.org/) language's exciting features,
+like auto-generated trait implementations,
+lifetime checking,
+and custom static analysis plugins.
 
 
 # Memory management for the DOM
 
 It's essential that we never destroy a DOM object
-while it's still accessible from either JavaScript or native code -
-such [use-after-free bugs](http://cwe.mitre.org/data/definitions/416.html) often result in exploitable security holes.
+while it's still reachable from either JavaScript or native code —
+such [use-after-free bugs](http://cwe.mitre.org/data/definitions/416.html) often produce exploitable security holes.
 To solve this problem, most existing browsers use
 [reference counting](http://en.wikipedia.org/wiki/Reference_counting)
 to track the pointers between underlying low-level DOM objects.
@@ -49,7 +39,7 @@ When JavaScript retrieves a DOM object
 the browser builds a "reflector" object in the JavaScript VM
 that holds a reference to the underlying low-level object.
 If the JavaScript garbage collector determines that
-a reflector is no longer accessible,
+a reflector is no longer reachable,
 it destroys the reflector
 and decrements the reference count
 on the underlying object.
@@ -57,8 +47,8 @@ on the underlying object.
 This solves the use-after-free issue.
 But to keep users happy,
 we also need to keep the browser's memory footprint small.
-This means destroying objects as soon as possible
-when they are no longer needed.
+This means destroying objects as soon as
+they are no longer needed.
 Unfortunately, the cross-language "reflector" scheme
 introduces a major complication.
 
@@ -67,12 +57,12 @@ Consider a C++ `Element` object which holds a reference-counted pointer to an `E
 ```cpp
 struct Element {
     RefPtr<Event> mEvent;
-}
+};
 ```
 
 Now suppose we add an event handler to the element from JavaScript:
 
-```js
+```javascript
 elem.addEventListener('load', function (event) {
     event.originalTarget = elem;
 });
@@ -81,7 +71,6 @@ elem.addEventListener('load', function (event) {
 When the event fires,
 the handler adds a property on the `Event`
 which points back to the `Element`.
-
 We now have a cross-language reference cycle,
 with an `Element` pointing to an `Event` within C++,
 and an `Event` reflector pointing to the `Element` reflector in JavaScript.
@@ -90,210 +79,378 @@ and the JavaScript garbage collector can't trace through
 the C++ pointers,
 so these objects will never be freed.
 
-[ FIXME: draw a graph? ]
-
-Existing browsers resolve this problem in several ways:
-some do nothing, and leak memory;
-some try to manually break possible cycles,
-by nulling out `mEvent` for example;
-some implement a cycle collection algorithm
+Existing browsers resolve this problem in several ways.
+Some do nothing, and leak memory.
+Some try to manually break possible cycles,
+by nulling out `mEvent` for example.
+And some implement a [cycle collection](FIXME) algorithm
 on top of reference counting.
 
 None of these solutions are particularly satisfying,
-so we're trying something new in Servo by choosing not to use
-reference counting on DOM objects at all.
+so we're trying something new in Servo by choosing not to
+reference count DOM objects at all.
 Instead, we give the JavaScript garbage collector full responsibility
 for managing those native-code DOM objects.
-Before we manipulate a DOM object from native code,
-we must first [root](http://en.wikipedia.org/wiki/Tracing_garbage_collection#Reachability_of_an_object) it in the garbage collector
-to ensure it won't be destroyed inadvertently.
+This requires a fairly complex interaction
+between Servo's Rust code
+and the [SpiderMonkey](https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey) garbage collector,
+which is written in C++.
+Fortunately,
+Rust provides some cool features
+that let us build this
+in a way that's fast, secure, and maintainable.
 
-This is where we take advantage of some cool Rust features.
-We use compiler-derived traits
-to implement garbage collector hooks
-without error-prone boilerplate.
-We use a custom static analysis pass
-to check that DOM objects are rooted when they need to be.
-Finally, we use lifetime checking to ensure at compile time
-that pointers to the interior of a DOM object
-cannot outlive the rooting.
 
----
+# Auto-generating field traversals
 
-# Compiler-derived traits
-
-We have to tell the JavaScript garbage collector
-about references between our DOM objects
-so it can determine reachability.
-Gecko's cycle collector faces a similar problem,
-and contains a lot of hand-written annotations such as
+How will the garbage collector
+find all the references between DOM objects?
+In [Gecko](FIXME)'s cycle collector this is done with
+a lot of hand-written annotations, e.g.:
 
 ```cpp
 NS_IMPL_CYCLE_COLLECTION(nsFrameLoader, mDocShell, mMessageManager, mChildMessageManager)
 ```
 
-This macro declares the members of a C++ class
-that should be added to a graph of potential cycles.
-Forgetting an entry can result in a memory leak.
+This macro describes which members of a C++ class
+should be added to a graph of potential cycles.
+Forgetting an entry can produce a memory leak.
 In Servo the consequences would be even worse:
 if the garbage collector can't see all references,
 it might free a node that is still in use.
 It's essential for both security and programmer convenience
-that we get rid of this manual effort.
+that we get rid of this manual listing of fields.
 
 Rust has a notion of [traits](http://doc.rust-lang.org/tutorial.html#traits),
 which are similar to [type classes](http://learnyouahaskell.com/types-and-typeclasses) in Haskell
 or interfaces in many OO languages.
-A simple example is the [`Clone` trait](http://doc.rust-lang.org/std/clone/trait.Clone.html):
+A simple example is the [`Collection` trait](FIXME):
 
 ```rust
-pub trait Clone {
-    fn clone(&self) -> Self;
+pub trait Collection {
+    fn len(&self) -> uint;
 }
 ```
 
-Any type implementing the `Clone` trait
-will provide a method named `clone`
+Any type implementing the `Collection` trait
+will provide a method named `len`
 that takes a value of the type
 (by reference, hence `&self`)
-and returns a new value of the same type (`Self`).
-Clearly, the `Clone` trait describes objects that can be copied.
+and returns an unsigned integer.
+In other words,
+the `Collection` trait describes
+any type which is a collection of elements,
+and the trait provides
+a way to get the collection's length.
 
-Another example is the [`Encodable` trait](http://doc.rust-lang.org/serialize/trait.Encodable.html) for serialization:
+Now let's look at the [`Encodable` trait](http://doc.rust-lang.org/serialize/trait.Encodable.html),
+used for serialization.
+Here's a simplified version:
 
 ```rust
-pub trait Encodable<Enc: Encoder<Err>, Err> {
-    fn encode(&self, encoder: &mut Enc) -> Result<(), Err>;
+pub trait Encodable {
+    fn encode<T: Encoder>(&self, encoder: &mut T);
 }
 ```
 
-This definition is more complicated than `Clone`
-because the trait has type parameters `Enc` and `Err`,
-and `Enc` itself is required to be a type implementing
-another trait `Encoder`.
-
-Any data type that can be serialized will provide an `encode` method,
-which visits the data type's fields by 
-calling [`Encoder`](http://doc.rust-lang.org/serialize/trait.Encoder.html),
-methods such as `emit_u32`, `emit_tuple`, etc.
-This leaves the details of a particular serialization format
-(such as JSON)
-up to the `Encoder`.
+Any type which can be serialized
+will provide an `encode` method.
+The `encode` method itself is generic;
+it takes as an argument
+any type `T` implementing the trait `Encoder`.
+The `encode` method visits the data type's fields by
+calling [`Encoder` methods](http://doc.rust-lang.org/serialize/trait.Encoder.html)
+such as `emit_u32`, `emit_tuple`, etc.
+The details of the particular serialization format
+(e.g. JSON)
+are handled by the `Encoder` implementation.
 
 The `Encodable` trait is special,
 because the compiler can implement it for us!
-All we need to do is provide a [`deriving`](http://doc.rust-lang.org/tutorial.html#deriving-implementations-for-traits) attribute
-on the definition of a type:
+Although this mechanism was intended for painless serialization,
+it's exactly what we need
+to implement garbage collector trace hooks
+without manually listing data fields.
+
+Let's look at [Servo's implementation](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/document.rs#L68-L80)
+of the DOM's [`Document` interface](https://developer.mozilla.org/en-US/docs/Web/API/document):
 
 ```rust
 #[deriving(Encodable)]
-pub struct Element {
+pub struct Document {
     pub node: Node,
-    pub local_name: Atom,
-    pub namespace: Namespace,
+    pub window: JS<Window>,
+    pub is_html_document: bool,
     ...
 }
 ```
 
-The Rust compiler will automatically generate an `encode` method
-that calls the respective `encode` methods on `node`, `local_name`, etc.
-An `Element` contains a `Node` (directly, by value)
-so the generated code will recursively visit the fields of `node`,
-and so on.
-This nicely replaces
-the manual listing of data fields
-that we had in C++.
-The compiler will yell at us
-if we add a field to `Element` that doesn't implement `Encodable`,
-providing compile-time assurance
+The [`deriving`](http://doc.rust-lang.org/tutorial.html#deriving-implementations-for-traits) attribute
+asks the compiler to write an implementation of `encode`
+that recursively calls `encode`
+on `node`, `window`, etc.
+The compiler will complain
+if we add a field to `Document` that doesn't implement `Encodable`,
+so we have compile-time assurance
 that we're tracing all the fields
 of our objects.
 
-The pointers between DOM objects are represented by a type `JS<T>`:
+Note the difference between the `node` and `window` fields above.
+In the [object hierarchy of the DOM spec](http://dom.spec.whatwg.org/#interface-document),
+every `Document` is also a `Node`.
+Rust doesn't have inheritance for data types,
+so we implement this by storing a `Node` struct
+within a `Document` struct.
+As in C++,
+the fields of `Node` are included in-line with the fields of `Document`,
+without any pointer indirection.
+And the auto-generated `encode` method will visit those fields.
+
+A `Document` also has an associated `Window`,
+but this is not a containing or "is-a" relationship.
+The `Document` just has a pointer to a `Window`,
+one of many pointers to that object,
+which can live in native DOM data structures
+or in JavaScript reflectors.
+
+These are precisely the pointers
+we need to tell the garbage collector about.
+We do this with a [custom pointer type](FIXME) `JS<T>`,
+for example `JS<Window>` above.
+The implementation of [`encode` for `JS<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/trace.rs#L51-L56)
+is not auto-generated;
+this is where we actually call
+the SpiderMonkey trace hooks.
+
+
+# Lifetime checking for safe rooting
+
+The Rust code in Servo
+needs to pass DOM object pointers as function arguments,
+store DOM object pointers in local variables,
+and so forth.
+We need to register these additional temporary references
+as [roots](http://en.wikipedia.org/wiki/Tracing_garbage_collection#Reachability_of_an_object)
+in the garbage collector's reachability analysis.
+And we need to make sure we don't touch an object from Rust
+when it's not rooted;
+this could introduce a use-after-free vulnerability.
+
+To make this happen,
+we need to expand our repertoire of GC-managed pointer types.
+We already talked about [`JS<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L107-L110),
+which represents a reference
+between two GC-managed DOM objects.
+These are not rooted;
+the garbage collector only knows about them
+when `encode` reaches one
+as part of the tracing process.
+
+When we want to use a DOM object from Rust code,
+we call the `root` method on `JS<T>`.
+For example:
 
 ```rust
-#[deriving(Encodable)]
-pub struct Node {
-    pub type_id: NodeTypeId,
-    pub parent_node: Option<JS<Node>>,
-    pub first_child: Option<JS<Node>>,
+fn load_anchor_href(&self, href: DOMString) {
+    let window = self.window.root();
+    window.load_url(href);
+}
+```
+
+The `root` method returns a `Root<T>`,
+which is stored in a stack-allocated local variable.
+When the `Root<T>` is destroyed at the end of the function,
+its destructor will un-root the DOM object.
+This is an example of the [RAII idiom](http://en.wikipedia.org/wiki/Resource_Acquisition_Is_Initialization),
+which Rust inherits from C++.
+
+Of course,
+a DOM object might make its way through
+many function calls
+and local variables
+before we're done with it.
+We want to avoid the cost of
+telling SpiderMonkey about each and every step.
+Instead,
+we have another type [`JSRef<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L443-L447),
+which represents a pointer to a GC-managed object
+which is already rooted elsewhere.
+Unlike `Root<T>`,
+`JSRef<T>` can be copied at negligible cost.
+
+We shouldn't un-root an object
+if it's still reachable through `JSRef<T>`.
+So it's important that
+a `JSRef<T>` can't outlive
+its originating `Root<T>`.
+Situations like this are common in C++ as well.
+No matter how smart your smart pointer is,
+you can take a bare reference to the contents
+and then erroneously use that reference
+past the lifetime of the smart pointer.
+
+Rust solves this problem
+with a compile-time [lifetime checker](http://doc.rust-lang.org/guide-lifetimes.html).
+The type of a reference includes
+the region of code over which it is valid.
+In most cases,
+lifetimes are [inferred](FIXME)
+and don't need to be written out in the source code.
+Inferred or not,
+the presence of lifetime information
+allows the compiler to reject
+use-after-free and other dangerous bugs
+at build time.
+
+Not only do lifetimes protect
+Rust's built-in reference type,
+we can use them in our own data structures
+as well.
+`JSRef` is actually [defined](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L443-L447) as
+
+```rust
+pub struct JSRef<'a, T> {
     ...
 ```
 
-Each node [optionally](http://doc.rust-lang.org/std/option/type.Option.html) points to
-a parent node, a first child, and so forth.
-The [`Encodable` implementation for `JS<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/trace.rs#L51-L56)
-is *not* automatically derived;
-this is where we actually tell
-the JavaScript garbage collector
-about these pointers.
+`T` is the familiar type variable,
+representing the type of DOM structure we're pointing to,
+e.g. `Window`.
+The somewhat odd syntax `'a` is a [lifetime variable](http://doc.rust-lang.org/guide-lifetimes.html#named-lifetimes),
+representing the region of code
+for which that object is rooted.
+Crucially,
+this lets us write a [method](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L417-L419) on `Root`
+with the following signature:
 
-
-# Lifetimes
-
-By yielding all control over deallocation to SpiderMonkey's garbage collector, we now need to solve the safety problem that other browsers use reference counting to avoid. We've developed a simple set of types that enforce sound rooting practices, such that it should be impossible to use pointers to GC-owned values in unsafe ways.
-
-* `Root<T>` - stack-allocated value that "roots" a GC-owned value for the duration of the root's lifetime (ie. prevents it being collected)
-* `JSRef<T>` - freely-cloneable smart pointer to a rooted, GC-owned value that can be dereferenced to interact with the wrapped value
-* `JS<T>` - non-stack-allocated pointer to a GC-owned value
-* `Temporary<T>` - stack-allocated, movable pointer to a GC-owned value that ensures its wrapped value is rooted for the duration of the wrapper's lifetime
-
-These types allow us to enforce the following rules that make Servo's DOM implementation safe:
-
-* All interactions with the underlying GC-owned value (both calling methods and accessing members) must occur through a root
-  * Only `JSRef` implements any dereferencing behaviour. `Temporary` and `JS` values merely carry around a pointer and provide facilities to create stack-bounded roots.
-  * All methods take `JSRef` arguments, and all methods for DOM type Foo are implemented on `JSRef<Foo>` types, rather than `Foo` itself. This ensures that argument and self pointers are always safe to use.
-* Any reference to a GC-owned value on the heap must be reachable by the GC
-  * `JS<T>` pointers implement the tracing trait described previously. 
-* No reference to a rooted value can outlive its root
-  * `JSRef<T>`'s formal type is actually `JSRef<'a, T>`. The `'a` refers to a lifetime variable, which refers to the lifetime of the originating root for this reference. For this reason, the Rust compiler enforces that a `JSRef` value cannot outlive its owning root.
-
-The last point is the one unique to Rust. In Rust, every value has a lifetime that encompasses its allocation and deallocation. This is easiest to understand in the context of lexical scopes:
 ```rust
-  struct Container<'a, 'b> {
-    int_ptr: &'a int,
-    str_ptr: &'b str,
-  }
-
-  {
-    let some_int = 5;                               // 'some_int
-    {                                               // ^
-      let some_str = "foo";                         // |  'some_str
-      {                                             // |  ^
-        let container = Container { a: &a, b: &b }; // |  |  'container
-        println!("{:?} {:?}",                       // |  |  ^
-                 *container.int_ptr,                // |  |  |
-                 *container.str_ptr);               // |  |  v
-      }                                             // |  v
-    }                                               // v
-  }
+pub fn root_ref<'a>(&'a self) -> JSRef<'a, T> {
+    ...
 ```
 
-`Container` is a structure containing safe references to live values - the Rust compiler enforces this by only allowing pointers to values with lifetimes that are at least as long as the lifetime `'container` in this case. The lifetimes `'some_int` and `'some_str`, which are equivalent to the surrounding lexical scopes, fulfill this property, and are substituted for the generic lifetimes `'a` and `'b'` for the type of the value `container`.
+What this syntax means is:
+
+* **`<'a>`**: "for any lifetime `'a`",
+* **`(&'a self)`**: "take a reference to a `Root` which is valid over lifetime `'a`",
+* **`-> JSRef<'a, T>`**: "return a `JSRef` whose lifetime parameter is set to `'a`".
+
+The final piece of the puzzle
+is that we put a [marker](FIXME) in the `JSRef` type
+saying that it's only valid
+for the lifetime corresponding to that parameter `'a`.
+This is how we extend the lifetime system
+to enforce our application-specific property
+about garbage collector rooting.
+
+[ FIXME: example code here ]
+
+We also [implement](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L429-L441)
+the `Deref` trait
+for both `Root<T>` and `JSRef<T>`.
+This allows us to access
+fields of the underlying type `T`
+through a `Root<T>` or `JSRef<T>`.
+Because `JS<T>` does *not* implement `Deref`,
+we have to root an object
+before using it.
+
+The DOM methods of `Window` (for example)
+are defined in [a trait](FIXME)
+which is implemented for `JSRef<Window>`.
+This ensures that `self` is rooted
+for the duration of the method call,
+which would not be guaranteed
+if we implemented the methods
+on `Window` directly.
 
 
+# Custom static analysis
 
-Custom static analysis pass
-===========================
+To recap,
+the safety of our system depends on
+two major parts:
 
-As described previously, the Rust compiler can ensure that it's impossible to misuse `JSRef` values and cause use-after-free errors. However, there are no such guarantees about `JS<T>` values, which must only be used as members of heap-allocated types. If it is used as a stack value instead, the compiler does not know that it's no longer safe to create stack-bounded roots from the pointers, as the wrapped value may already have been deallocated. Therefore, we have created a custom static analysis that executes as part of every build and causes a build error if any `JS<T>` value is encountered that is transitively reachable from a stack location.
+* The auto-generated `encode` methods ensure that SpiderMonkey's garbage collector can see all of the references between DOM objects.
+* The implementation of `Root<T>` and `JSRef<T>` guarantee that we can't use a DOM object from Rust without telling SpiderMonkey about our temporary reference.
 
+But there's a hole in this scheme.
+We could copy an unrooted pointer
+— a `JS<T>`
+— to a local variable on the stack,
+and then at some later point,
+root it
+and use the DOM object.
+In the meantime,
+SpiderMonkey's garbage collector won't know about
+that `JS<T>` on the stack,
+so it might free the DOM object.
+To really be safe,
+we need to make sure that `JS<T>`
+*only* appears in traceable DOM structs,
+and never in local variables,
+function arguments,
+and so forth.
 
+This rule doesn't correspond to
+anything that already exists in Rust's type system.
+Fortunately,
+the Rust compiler can load
+"[lint plugins](FIXME)" providing custom static analysis.
+These basically take the form of new compiler warnings,
+although in this case we set the default severity to "error".
 
----
+We have already [implemented a plugin](FIXME)
+which simply forbids `JS<T>` from appearing at all.
+Because lint plugins are part of
+the usual [warnings infrastructure](FIXME),
+we can use the `allow` attribute in places
+where it's okay to use `JS<T>`,
+like DOM struct definitions
+and the implementation of `JS<T>` itself.
 
-To quickly review, there exists specific allocation control in languages like C++:
-```
-  Image* image = new Image();
-  ...
-  delete image;
-```
-while in JavaScript, the following behaves quite differently, despite appearing superficially similar:
-```
-  var image = new Image();
-  ...
-  delete image;
-```
-In JavaScript, the programmer lacks control over the deallocation of values. The `delete` operator seen here merely removes a reference to the value, but it will not be deallocated until the next time the browser virtual machine invokes a full garbage collection, and only then if there are no other outstanding references to the value. 
+Our plugin looks at every place where the code mentions a type.
+Remarkably, this adds only about 0.25 seconds (FIXME: verify)
+to the compile time for Servo's largest subcomponent.
+(Rust compile times are dominated by
+[LLVM's](FIXME) back-end optimizations
+and code generation.)
+The current version of the plugin
+is very simple
+and will miss some mistakes,
+like storing a struct containing `JS<T>` on the stack.
+However,
+lint plugins run at a late stage of compilation
+and have access to full compiler internals,
+including the results of type inference.
+So we can make the plugin
+incrementally more sophisticated in the future.
 
+We won't necessarily catch every possible mistake;
+it's hard to achieve full [soundness](FIXME)
+with ad-hoc extensions to a type system.
+As the name "lint plugin" suggests,
+the idea is to catch common mistakes
+at a low cost to programmer productivity.
+By combining this
+with the lifetime checking built in to Rust's type system,
+we hope to achieve a degree of security and reliability
+far beyond what's feasible in C++.
+And the checking is all done at compile time;
+there's no penalty in the generated machine code.
 
+It's an open question
+how our garbage-collected DOM will perform
+compared to a traditional reference-counted DOM.
+The [Blink](FIXME) team has performed
+[similar experiments](FIXME),
+but they don't have Servo's luxury
+of starting from a clean slate
+and using a cutting-edge language.
+We expect the biggest gains will come
+when we move to allocating DOM objects
+within the JavaScript reflectors themselves.
+Since the reflectors need to be traced no matter what,
+this will reduce the cost of managing native DOM structures
+to almost nothing.
+
+[FIXME: hype contributing to Rust and Servo?]
