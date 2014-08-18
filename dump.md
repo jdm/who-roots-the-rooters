@@ -111,7 +111,7 @@ In [Gecko](https://developer.mozilla.org/en-US/docs/Mozilla/Gecko)'s cycle colle
 a lot of hand-written annotations, e.g.:
 
 ```cpp
-NS_IMPL_CYCLE_COLLECTION(nsFrameLoader, mDocShell, mMessageManager, mChildMessageManager)
+NS_IMPL_CYCLE_COLLECTION(nsFrameLoader, mDocShell, mMessageManager)
 ```
 
 This macro describes which members of a C++ class
@@ -398,7 +398,7 @@ the safety of our system depends on
 two major parts:
 
 * The auto-generated `encode` methods ensure that SpiderMonkey's garbage collector can see all of the references between DOM objects.
-* The implementation of `Root<T>` and `JSRef<T>` guarantee that we can't use a DOM object from Rust without telling SpiderMonkey about our temporary reference.
+* The implementation of `Root<T>` and `JSRef<T>` guarantees that we can't use a DOM object from Rust without telling SpiderMonkey about our temporary reference.
 
 But there's a hole in this scheme.
 We could copy an unrooted pointer
@@ -452,7 +452,8 @@ including the results of type inference.
 So we can make the plugin
 incrementally more sophisticated in the future.
 
-We won't necessarily catch every possible mistake.
+In the end,
+the plugin won't necessarily catch every mistake.
 It's hard to achieve full [soundness](http://en.wikipedia.org/wiki/Soundness)
 with ad-hoc extensions to a type system.
 As the name "lint plugin" suggests,
@@ -462,8 +463,8 @@ By combining this
 with the lifetime checking built in to Rust's type system,
 we hope to achieve a degree of security and reliability
 far beyond what's feasible in C++.
-And the checking is all done at compile time;
-there's no penalty in the generated machine code.
+And the checking is all done at compile time,
+so there's no penalty in the generated machine code.
 
 It's an open question
 how our garbage-collected DOM will perform
