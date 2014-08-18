@@ -83,7 +83,7 @@ Existing browsers resolve this problem in several ways.
 Some do nothing, and leak memory.
 Some try to manually break possible cycles,
 by nulling out `mEvent` for example.
-And some implement a [cycle collection](FIXME) algorithm
+And some implement a [cycle collection](https://developer.mozilla.org/en-US/docs/Interfacing_with_the_XPCOM_cycle_collector) algorithm
 on top of reference counting.
 
 None of these solutions are particularly satisfying,
@@ -105,7 +105,7 @@ in a way that's fast, secure, and maintainable.
 
 How will the garbage collector
 find all the references between DOM objects?
-In [Gecko](FIXME)'s cycle collector this is done with
+In [Gecko](https://developer.mozilla.org/en-US/docs/Mozilla/Gecko)'s cycle collector this is done with
 a lot of hand-written annotations, e.g.:
 
 ```cpp
@@ -124,7 +124,7 @@ that we get rid of this manual listing of fields.
 Rust has a notion of [traits](http://doc.rust-lang.org/tutorial.html#traits),
 which are similar to [type classes](http://learnyouahaskell.com/types-and-typeclasses) in Haskell
 or interfaces in many OO languages.
-A simple example is the [`Collection` trait](FIXME):
+A simple example is the [`Collection` trait](http://doc.rust-lang.org/std/collections/trait.Collection.html):
 
 ```rust
 pub trait Collection {
@@ -215,7 +215,7 @@ or in JavaScript reflectors.
 
 These are precisely the pointers
 we need to tell the garbage collector about.
-We do this with a [custom pointer type](FIXME) `JS<T>`,
+We do this with a [custom pointer type](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L107-L110) `JS<T>`,
 for example `JS<Window>` above.
 The implementation of [`encode` for `JS<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/trace.rs#L51-L56)
 is not auto-generated;
@@ -238,7 +238,7 @@ this could introduce a use-after-free vulnerability.
 
 To make this happen,
 we need to expand our repertoire of GC-managed pointer types.
-We already talked about [`JS<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L107-L110),
+We already talked about `JS<T>`,
 which represents a reference
 between two GC-managed DOM objects.
 These are not rooted;
@@ -247,7 +247,7 @@ when `encode` reaches one
 as part of the tracing process.
 
 When we want to use a DOM object from Rust code,
-we call the `root` method on `JS<T>`.
+we call the [`root` method](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L155-L161) on `JS<T>`.
 For example:
 
 ```rust
@@ -294,7 +294,7 @@ with a compile-time [lifetime checker](http://doc.rust-lang.org/guide-lifetimes.
 The type of a reference includes
 the region of code over which it is valid.
 In most cases,
-lifetimes are [inferred](FIXME)
+lifetimes are [inferred](http://en.wikipedia.org/wiki/Type_inference)
 and don't need to be written out in the source code.
 Inferred or not,
 the presence of lifetime information
@@ -320,7 +320,7 @@ The somewhat odd syntax `'a` is a [lifetime variable](http://doc.rust-lang.org/g
 representing the region of code
 for which that object is rooted.
 Crucially,
-this lets us write a [method](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L417-L419) on `Root`
+this lets us write a [method](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L415-L419) on `Root`
 with the following signature:
 
 ```rust
@@ -335,17 +335,41 @@ What this syntax means is:
 * **`-> JSRef<'a, T>`**: "return a `JSRef` whose lifetime parameter is set to `'a`".
 
 The final piece of the puzzle
-is that we put a [marker](FIXME) in the `JSRef` type
+is that we put a [marker](http://doc.rust-lang.org/std/kinds/marker/struct.ContravariantLifetime.html) in the `JSRef` type
 saying that it's only valid
 for the lifetime corresponding to that parameter `'a`.
 This is how we extend the lifetime system
 to enforce our application-specific property
 about garbage collector rooting.
+If we try to compile something like this:
 
-[ FIXME: example code here ]
+```rust
+fn bogus_get_window<'a>(&self) -> JSRef<'a, Window> {
+    let window = self.window.root();
+    window.root_ref()  // return the JSRef
+}
+```
+
+we get an error:
+
+```
+document.rs:199:9: 199:15 error: `window` does not live long enough
+document.rs:199         window.root_ref()
+                        ^~~~~~
+document.rs:197:57: 200:6 note: reference must be valid for the lifetime 'a as defined on the block at 197:56...
+document.rs:197     fn bogus_get_window<'a>(&self) -> JSRef<'a, Window> {
+document.rs:198         let window = self.window.root();
+document.rs:199         window.root_ref()
+document.rs:200     }
+document.rs:197:57: 200:6 note: ...but borrowed value is only valid for the block at 197:56
+document.rs:197     fn bogus_get_window<'a>(&self) -> JSRef<'a, Window> {
+document.rs:198         let window = self.window.root();
+document.rs:199         window.root_ref()
+document.rs:200     }
+```
 
 We also [implement](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L429-L441)
-the `Deref` trait
+the [`Deref` trait](http://doc.rust-lang.org/std/ops/trait.Deref.html)
 for both `Root<T>` and `JSRef<T>`.
 This allows us to access
 fields of the underlying type `T`
@@ -355,7 +379,7 @@ we have to root an object
 before using it.
 
 The DOM methods of `Window` (for example)
-are defined in [a trait](FIXME)
+are defined in [a trait](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/compositing/windowing.rs#L61-L81)
 which is implemented for `JSRef<Window>`.
 This ensures that `self` is rooted
 for the duration of the method call,
@@ -363,6 +387,9 @@ which would not be guaranteed
 if we implemented the methods
 on `Window` directly.
 
+You can check out
+the [Servo project wiki](https://github.com/servo/servo/wiki/Using-DOM-types)
+for more of the details that didn't make it into this article.
 
 # Custom static analysis
 
@@ -395,24 +422,24 @@ This rule doesn't correspond to
 anything that already exists in Rust's type system.
 Fortunately,
 the Rust compiler can load
-"[lint plugins](FIXME)" providing custom static analysis.
+"[lint plugins](https://github.com/rust-lang/rust/pull/15024)" providing custom static analysis.
 These basically take the form of new compiler warnings,
 although in this case we set the default severity to "error".
 
-We have already [implemented a plugin](FIXME)
+We have already [implemented a plugin](https://github.com/kmcallister/servo/commit/c20b50bbbbcdc8ce3551adbc1e039a727cf89995)
 which simply forbids `JS<T>` from appearing at all.
 Because lint plugins are part of
-the usual [warnings infrastructure](FIXME),
+the usual [warnings infrastructure](http://doc.rust-lang.org/rust.html#lint-check-attributes),
 we can use the `allow` attribute in places
 where it's okay to use `JS<T>`,
 like DOM struct definitions
 and the implementation of `JS<T>` itself.
 
 Our plugin looks at every place where the code mentions a type.
-Remarkably, this adds only about 0.25 seconds (FIXME: verify)
+Remarkably, this adds only a fraction of a second
 to the compile time for Servo's largest subcomponent.
 (Rust compile times are dominated by
-[LLVM's](FIXME) back-end optimizations
+[LLVM](http://llvm.org/)'s back-end optimizations
 and code generation.)
 The current version of the plugin
 is very simple
@@ -425,8 +452,8 @@ including the results of type inference.
 So we can make the plugin
 incrementally more sophisticated in the future.
 
-We won't necessarily catch every possible mistake;
-it's hard to achieve full [soundness](FIXME)
+We won't necessarily catch every possible mistake.
+It's hard to achieve full [soundness](http://en.wikipedia.org/wiki/Soundness)
 with ad-hoc extensions to a type system.
 As the name "lint plugin" suggests,
 the idea is to catch common mistakes
@@ -441,8 +468,8 @@ there's no penalty in the generated machine code.
 It's an open question
 how our garbage-collected DOM will perform
 compared to a traditional reference-counted DOM.
-The [Blink](FIXME) team has performed
-[similar experiments](FIXME),
+The [Blink](http://www.chromium.org/blink) team has performed
+[similar experiments](http://www.chromium.org/blink/blink-gc),
 but they don't have Servo's luxury
 of starting from a clean slate
 and using a cutting-edge language.
@@ -453,4 +480,15 @@ Since the reflectors need to be traced no matter what,
 this will reduce the cost of managing native DOM structures
 to almost nothing.
 
-[FIXME: hype contributing to Rust and Servo?]
+If you find this stuff interesting,
+we'd love to have your help on Rust and Servo!
+Both are open-source projects
+with a large number of community contributors.
+Here are some resources for getting started:
+
+* The [Rust Tutorial](http://doc.rust-lang.org/tutorial.html) and the [Rust Guide](http://doc.rust-lang.org/guide.html)
+* Places to talk about Rust: [Reddit](http://www.reddit.com/r/rust), [mailing list](https://mail.mozilla.org/listinfo/rust-dev), [IRC](http://client00.chat.mibbit.com/?server=irc.mozilla.org&channel=%23rust) (`#rust` on `irc.mozilla.org`)
+* [Guide for new Rust contributors](https://github.com/rust-lang/rust/wiki/Note-guide-for-new-contributors)
+* [Guide for contributing to Servo](https://github.com/servo/servo/blob/master/CONTRIBUTING.md)
+* ["Easy" issues in Servo](https://github.com/servo/servo/labels/E-easy)
+* [Servo IRC channel](http://client00.chat.mibbit.com/?server=irc.mozilla.org&channel=%23rust): `#servo` on `irc.mozilla.org`
