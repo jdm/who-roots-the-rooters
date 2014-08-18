@@ -379,8 +379,8 @@ we have to root an object
 before using it.
 
 The DOM methods of `Window` (for example)
-are defined in [a trait](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/compositing/windowing.rs#L61-L81)
-which is implemented for `JSRef<Window>`.
+are defined in a trait
+which is [implemented](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/window.rs#L123) for `JSRef<Window>`.
 This ensures that `self` is rooted
 for the duration of the method call,
 which would not be guaranteed
