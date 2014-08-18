@@ -214,7 +214,6 @@ The `Document` just has a pointer to a `Window`,
 one of many pointers to that object,
 which can live in native DOM data structures
 or in JavaScript reflectors.
-
 These are precisely the pointers
 we need to tell the garbage collector about.
 We do this with a [custom pointer type](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L107-L110) `JS<T>`,
@@ -274,7 +273,7 @@ before we're done with it.
 We want to avoid the cost of
 telling SpiderMonkey about each and every step.
 Instead,
-we have another type [`JSRef<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L443-L447),
+we have another type `JSRef<T>`,
 which represents a pointer to a GC-managed object
 which is already rooted elsewhere.
 Unlike `Root<T>`,
@@ -301,8 +300,7 @@ and don't need to be written out in the source code.
 Inferred or not,
 the presence of lifetime information
 allows the compiler to reject
-use-after-free and other dangerous bugs
-at build time.
+use-after-free and other dangerous bugs.
 
 Not only do lifetimes protect
 Rust's built-in reference type,
@@ -320,7 +318,7 @@ representing the type of DOM structure we're pointing to,
 e.g. `Window`.
 The somewhat odd syntax `'a` is a [lifetime variable](http://doc.rust-lang.org/guide-lifetimes.html#named-lifetimes),
 representing the region of code
-for which that object is rooted.
+in which that object is rooted.
 Crucially,
 this lets us write a [method](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L415-L419) on `Root`
 with the following signature:
