@@ -205,7 +205,7 @@ within a `Document` struct.
 As in C++,
 the fields of `Node` are included in-line with the fields of `Document`,
 without any pointer indirection,
-and the auto-generated `encode` method will visit those fields as well.
+and the auto-generated `encode` method will visit them as well.
 
 A `Document` also has an associated `Window`,
 but this is not a containing or "is-a" relationship.
