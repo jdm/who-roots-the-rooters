@@ -1,9 +1,8 @@
 # Safe DOM manipulation in Servo: tools for cross-language memory management
 
 A web browser's purpose in life
-is to mediate interaction between a user and a document.
-These days,
-a "document" can be a full-fledged interactive application.
+is to mediate interaction between a user and an application
+(which we somewhat anachronistically call a "document").
 Users expect a browser to be fast and responsive,
 so the core layout and rendering algorithms
 are typically implemented in low-level native code.
