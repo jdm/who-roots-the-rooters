@@ -204,19 +204,19 @@ so we implement this by storing a `Node` struct
 within a `Document` struct.
 As in C++,
 the fields of `Node` are included in-line with the fields of `Document`,
-without any pointer indirection.
-And the auto-generated `encode` method will visit those fields.
+without any pointer indirection,
+and the auto-generated `encode` method will visit those fields as well.
 
 A `Document` also has an associated `Window`,
 but this is not a containing or "is-a" relationship.
-The `Document` just has a pointer to a `Window`,
-one of many pointers to that object,
+The `Document` just has a pointer to a `Window`
+(one of many pointers to that object)
 which can live in native DOM data structures
 or in JavaScript reflectors.
 These are precisely the pointers
 we need to tell the garbage collector about.
-We do this with a [custom pointer type](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L107-L110) `JS<T>`,
-for example `JS<Window>` above.
+We do this with a [custom pointer type](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/js.rs#L107-L110) `JS<T>`
+(for example, the `JS<Window>` above).
 The implementation of [`encode` for `JS<T>`](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/bindings/trace.rs#L51-L56)
 is not auto-generated;
 this is where we actually call
@@ -232,7 +232,7 @@ and so forth.
 We need to register these additional temporary references
 as [roots](http://en.wikipedia.org/wiki/Tracing_garbage_collection#Reachability_of_an_object)
 in the garbage collector's reachability analysis.
-And we need to make sure we don't touch an object from Rust
+Additionally, we need to make sure we don't touch an object from Rust
 when it's not rooted;
 this could introduce a use-after-free vulnerability.
 
@@ -279,8 +279,8 @@ Unlike `Root<T>`,
 `JSRef<T>` can be copied at negligible cost.
 
 We shouldn't un-root an object
-if it's still reachable through `JSRef<T>`.
-So it's important that
+if it's still reachable through `JSRef<T>`,
+so it's important that
 a `JSRef<T>` can't outlive
 its originating `Root<T>`.
 Situations like this are common in C++ as well.
@@ -380,7 +380,7 @@ before using it.
 The DOM methods of `Window` (for example)
 are defined in a trait
 which is [implemented](https://github.com/servo/servo/blob/1c0e51015fc1a5ba0e189f114e35019af27d68ca/src/components/script/dom/window.rs#L123) for `JSRef<Window>`.
-This ensures that `self` is rooted
+This ensures that the `self` pointer is rooted
 for the duration of the method call,
 which would not be guaranteed
 if we implemented the methods
@@ -436,10 +436,10 @@ and the implementation of `JS<T>` itself.
 
 Our plugin looks at every place where the code mentions a type.
 Remarkably, this adds only a fraction of a second
-to the compile time for Servo's largest subcomponent.
-(Rust compile times are dominated by
+to the compile time for Servo's largest subcomponent, as
+Rust compile times are dominated by
 [LLVM](http://llvm.org/)'s back-end optimizations
-and code generation.)
+and code generation.
 The current version of the plugin
 is very simple
 and will miss some mistakes,
@@ -462,8 +462,8 @@ By combining this
 with the lifetime checking built in to Rust's type system,
 we hope to achieve a degree of security and reliability
 far beyond what's feasible in C++.
-And the checking is all done at compile time,
-so there's no penalty in the generated machine code.
+Additionally, since the checking is all done at compile time,
+there's no penalty in the generated machine code.
 
 It's an open question
 how our garbage-collected DOM will perform
